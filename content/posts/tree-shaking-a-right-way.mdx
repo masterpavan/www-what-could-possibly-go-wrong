@@ -1,0 +1,333 @@
+---
+slug: Tree Shaking -- a right way
+title: Tree Shaking -- a right way
+date: 2021-06-09
+author: masterpavan
+tags:
+  - style
+  - mdx
+---
+Lets assume you've heard of tree shaking.
+
+> _Tree shaking_ is a term commonly used in the JavaScript context for dead-code elimination.
+
+ Maybe you've read that on the  [Webpack docs](https://webpack.js.org/guides/tree-shaking/), maybe you've read [Rollup's explanation](https://rollupjs.org/guide/en/#tree-shaking). You probably googled "Tree Shaking" or even "Why isn't Tree Shaking working??". Regardless of how you got here, you are here for a reason. 
+
+You want to know the right way of setting up your application and libraries to support tree shaking.
+
+**Lets begin.**
+
+I want to preface that I am going to show you a setup that Just Works™. While this might not be your setup -- you might have different tools, you might organize your code in a different way -- Hopefully this still helps you understand why tree shaking is or isn't happening and lets you figure out a solution for your setup.
+
+Our code organization is as follows:
+
+ - We have a **consumer application** -- a simple dashboard that users access through their browser -- which imports and displays different charts and graphs from many different npm packages.
+ - We have a **library** -- published and versioned on npm -- which exports many different charts, many different graphs, and many different components. Some of these components are consumed by the above application. Others are used by a different consumer. All of these components live here so that they can be shared across multiple consumers.
+
+In short, the components live in the **library** and they are imported into the **consumer**. The consumer app is bundled together with **webpack**, so webpack is the one doing the tree shaking. Ideally, we want to tree shake out the library components we don't use in the consumer.
+
+## The Library
+There are a few things we have to make sure we do on the library side. 
+
+**1.  Side Effects:**
+First, webpack expects you to set the `sideEffects` flag in the library package.json. You can read webpack's writeup on that `sideEffects` [here](https://webpack.js.org/guides/tree-shaking/#mark-the-file-as-side-effect-free). Basically, you do this in your library package.json:
+```json
+{
+  "name": "@org/component-library",
+  "version": "3.32.2",
+  "module": "dist/index.bundled-right.js"
+  "sideEffects": false
+}
+```
+or, if you do have sideEffects (such as css) you do something like this:
+```json
+{
+  "name": "@org/component-library",
+  "version": "3.32.2",
+  "module": "dist/index.bundled-right.js"
+  "sideEffects": [
+	  "*.css",
+	  "*.less",
+	  "*.scss"
+  ]
+}
+```
+This tells the webpack the compiler that all files (except for the ones in that array) in your project are "pure" and therefore safe to prune if unused. The webpack writeup linked above explains this in more detail, so check it out if you want to know specifics.
+
+---
+**2. Modular Bundling**
+According to webpack, using the sideEffects flag achieves tree shaking by skipping whole modules/files when it constructs a bundle. In order for webpack to actually prune the modules/files you don't use, they heavily rely on ES6 import/export syntax. **Implication:** (and this really should be mentioned in their docs) **your library must be bundled into *separate* files, all strung together with import/export syntax, not just a single file.** This is important so I will give you an example:
+
+**Example:**
+If this is your source code structure **(A)**:
+```
+src
+├─ components
+│  ├─ gorgeous-graph
+│  │  ├─ gorgeous-graph.ts (3a)
+│  │  └─ index.ts (4a)
+│  ├─ wicked-widget
+│  │  ├─ wicked-widget.ts (5a)
+│  │  └─ index.ts (6a)
+│  └─ index.ts (2a)
+└─ index.ts (1a)
+```
+Where the file contents are as follows:
+```javascript
+// 1a: ./src/index.ts:
+export * from './components'
+```
+```javascript
+// 2a: ./src/components/index.ts
+export * from './gorgeous-graph'
+export * from './wicked-widget'
+```
+```javascript
+// 3a: ./src/components/gorgeous-graph/gorgeous-graph.ts
+export const GorgeousGraph = () => {...}
+```
+```javascript
+// 4a: ./src/components/gorgeous-graph/index.ts
+export * from './gorgeous-graph'
+```
+```javascript
+// 5a: ./src/components/wicked-widget/wicked-widget.ts
+export const WickedWidget = () => {...}
+```
+```javascript
+// 6a: ./src/components/wicked-widget/index.ts
+export * from './wicked-widget'
+```
+Then this needs to be your bundled code structure **(B)**:
+```
+dist
+├─ components
+│  ├─ gorgeous-graph
+│  │  └─ gorgeous-graph.bundled-right.js (2b)
+│  └─ wicked-widget
+│  │  └─ wicked-widget.bundled-right.js (3b)
+└─ index.bundled-right.js (1b)
+```
+Where the file contents are as follows: 
+
+```javascript
+// 1b: ./dist/index.bundled-right.js:
+export { GorgeousGraph } from './components/gorgeous-graph/gorgeous-graph.bundled-right.js'
+export { WickedWidget } from './components/wicked-widget/wicked-widget.bundled-right.js'
+```
+```javascript
+// 2b: ./dist/components/gorgeous-graph/gorgeous-graph.bundled-right.js
+const GorgeousGraph = () => {...}
+export { GorgeousGraph }
+```
+```javascript
+// 3b: ./src/components/wicked-widget/wicked-widget.bundled-right.js
+const WickedWidget = () => {...}
+export { WickedWidget }
+```
+NOT this **\(C\)**: 
+```
+dist
+└─ index.bundled-wrong.js (1c)
+```
+```javascript
+// 1c: ./dist/index.bundled-wrong.js
+const GorgeousGraph = () => {...}
+const WickedWidget = () => {...}
+export { GorgeousGraph, WickedWidget }
+```    
+This ensures that webpack will be able to traverse your bundle and prune any unused modules/files. 
+
+Why?
+
+Notice the difference between **(B)** and **\(C\)**. **\(C\)** is bundled together by concatenating all the source code that was exported/referenced by exports into a single file, then exporting it all in a statement at the bottom.  **(B)** doesn't do any concatenation. Instead, the entry file only contains re-exports of the source code that was exported.  
+
+> According to webpack, using the `sideEffects` flag achieves tree shaking by **skipping** whole modules/files when it constructs a bundle.
+>  -- me, above
+
+Webpack skips bundling modules/files by not resolving import/export statements. It doesn't look through your source code and try to determine whether or not code was referenced. It only looks at import/export statements to determine whether or not to include or exclude a chunk of source code. 
+
+The takeaway? If your bundle output looks like **\(C\)**, then you need to change it to look like **(B)**. 
+
+Okay... so how do you do that?
+
+Lucky for us, in this setup, the library is bundled together using **Rollup**. Unfortunately, Rollup will create a final bundle that looks like **\(C\)** by default, which is not what we want. However, even luckier for us, they have a nice flag called `preserveModules`. From their docs:
+
+> Instead of creating as few chunks as possible, this mode [*preserveModules mode*] will create separate chunks for all modules using the original module names as file names. Requires the output.dir option. 
+
+Which is exactly what we want! Our rollup config should look something like this:
+```javascript
+// rollup.config.js
+export default {
+	input: "src/index.ts" // this is file (1a) above--the entrypoint to the library
+	output: {
+		dir: 'dist', 
+		entryFileNames: '[name].bundled-right.js', // <- *important to have .js
+		format: 'es',
+	}, 
+	preserveModules: true 
+}
+```
+
+> *must use `entryFileNames` with a .js extension if your source is .ts, .tsx, .jsx, etc. and compiles down to javascript. Without it, rollup will use your original file extension on the bundled files (see [rollup#3107](https://github.com/rollup/rollup/issues/3107))
+
+---
+**3. Compile to ES6**
+You might have noticed the `format:  'es'` setting in the rollup config. This is also necessary. As I mentioned before, webpack relies on import/export syntax, and so your library code must be bundled as an ES module. If its not a ES bundle, there won't be any import/export statements for webpack to use. 
+
+If you use typescript, make sure to compile your typescript down to ES6+ as well --- more on that in the consumer section below.
+
+---
+At this point, the library should be correctly configured to be tree shaken. Here is a summary:
+
+ - Set `sideEffects: false` or list a set of sideEffects in your library `package.json`
+ - Make sure your final bundle seperates code into seperate files. You can do this with Rollup and `preserveModules`
+ - Make sure you bundle your library as an ES module. You can do this with the `format:  'es'` setting in the rollup config.
+
+## The Consumer
+If you haven't noticed from the code files above, we are using typescript. Compiling typescript down to javascript is easy enough using webpack or rollup with babel or ts-loader and there are tons of resources out there on how to do that. There is a crucial configuration we need to make sure of if we are compiling typescript down to javascript on the consumer side (and on the library side).
+
+---
+**1. Compile to ES6**
+Remember how I mentioned that webpack heavily relies on import/export syntax? For the whole tree shaking algorithm to take place, your consumer code needs to reference your library using import/export syntax too . That means that when you compile typescript down to javascript, you must ensure that it compiles it into ES6 format. Let me give you an example:
+
+Here is some consumer source code. On the consumer side, we only want to use gorgeous graphs and don't really care much for wicked widgets, so we would like the source code for wicked widgets to be tree shaken out.
+```javascript
+// ./src/dashboard.tsx
+// note this example isn't react specific, it can be any source code
+// angular, vue, or just plain functions.
+import { GorgeousGraph } from '@org/component-library'
+// .. other imports
+
+export const GraphContainer = () => {
+	// ... component code
+	return (
+		<GorgeousGraph />
+	)
+}
+```
+
+We need to make sure  to set our tsconfig.json like so:
+```json
+{
+	"compilerOptions": {
+		"module": "ES6", // instead of CommonJS or some other format
+		// ... other options
+	},
+	// ... other options
+}
+```
+
+> The same thing applies on the library side as well, if you are using typescript!
+
+When we run our consumer bundler (webpack) we end up with this as output:
+```javascript
+/***/  "./src/dashboard.tsx":
+/*!*****************************************************************!*\
+// ... removed webpack specific output for brevity
+
+/* harmony export (binding) */  __webpack_require__.d(__webpack_exports__, "GraphContainer ", function() { return  GraphContainer ; });
+/* harmony import */  var  react__WEBPACK_IMPORTED_MODULE_0__  =  __webpack_require__(/*! react */  "react");
+/* harmony import */  var  react__WEBPACK_IMPORTED_MODULE_0___default  =  /*#__PURE__*/__webpack_require__.n(react__WEBPACK_IMPORTED_MODULE_0__);
+/* harmony import */  var  _org_component_library__WEBPACK_IMPORTED_MODULE_4__  =  __webpack_require__(/*! @org/component-library */  "./node_modules/@org/component-library/dist/index.bundled-right.js");
+
+const GraphContainer = () => {
+	return react__WEBPACK_IMPORTED_MODULE_0___default.a.createElement(_org_component_library__WEBPACK_IMPORTED_MODULE_4__["GorgeousGraph"]);
+};
+```
+The presence of `/* harmony import */` indicates that the package is being imported as a ES6 module *(aka harmony module)* and so the tree shaking algorithm can be applied. If we didn't compile to ES6, and instead did CommonJS, we'd end up with something like this in the final webpack output:
+```javascript
+// if typescript compiles to CommonJS
+/***/  "./src/dashboard.tsx":
+/*!*****************************************************************!*\
+// ... removed webpack specific output for brevity
+
+const  react_1  =  __importStar(__webpack_require__(/*! react */  "react"));
+const  component_library_1=  __webpack_require__(/*! @org/component-library */  "./node_modules/@org/component-library/dist/index.bundled-right.js");
+
+exports.GraphContainer = () => {
+	return react_1.default.createElement(component_library_1.GorgeousGraph)
+}
+```
+Notice the lack of `/* harmony ... */`. Instead, you see stuff like `exports.GraphContainer`, which is how you export things in CommonJS format. Without ES6 syntax, the tree shaking algorithm won't even be applied to begin with.
+
+---
+**2. Use Terser**
+Why? 
+> `uglify-es`  is  [no longer maintained](https://github.com/mishoo/UglifyJS2/issues/3156#issuecomment-392943058) and  `uglify-js`  does not support ES6+.
+> --- terser's [readme](https://github.com/terser/terser/blob/master/README.md)
+
+ES6+ support is necessary for tree shaking. You can add terser to your webpack config like so:
+```javascript
+// webpack.config.js
+const TerserPlugin = require("terser-webpack-plugin");
+
+const terserPluginOptions = {
+	// options go here, see link below
+}
+
+const config = {
+	entry: 'src/index.ts'
+	output: {...}
+	module: {...}
+	plugins: {...}
+	optimization: {
+		minimizer: [new TerserPlugin(terserPluginOptions)]
+	}
+}
+
+module.exports = config
+```
+
+> terser-webpack-plugin's [options]([https://webpack.js.org/plugins/terser-webpack-plugin/#options](https://webpack.js.org/plugins/terser-webpack-plugin/#options))
+
+Terser also is the tool that actually does the dead code elimination, webpack just marks code for elimination. You can read all about it here: 
+
+## In Summary
+
+Using this setup, where your library is bundled with Rollup and your consumer is bundled with webpack, tree shaking is possible. Just make sure you do the following:
+
+**Library side**
+ - Set `sideEffects: false` or list a set of sideEffects in your library `package.json`
+ - Make sure your final bundle seperates code into seperate files. You can do this with Rollup and `preserveModules`
+ - Compile your typescript down to `"module": "ES6"`. The other `ES*` options should work too
+
+**Consumer side**
+- Compile your typescript down to `"module": "ES6"`. The other `ES*` options should work too
+- Use terser as webpack's minifier. Tree shaking won't happen without it.
+
+## FAQ
+
+> What if I don't use typescript?
+
+Just make sure you are writing your javascript with ES6 syntax.
+
+> What other options should I have set in my webpack config?
+
+Whatever webpack configuration you were using should be fine, if you make changes outlined above.
+
+> My code is still present in the webpack output file even though I followed all of your steps. What am I doing wrong?
+
+Webpack 4+ won't tree shake your code when it is in development mode. I know, its annoying. The best way to check if your bundle is actually being tree shaken is by using production mode, and then inspecting the bundle with a tool like [source-map-explorer](https://www.npmjs.com/package/source-map-explorer). 
+
+Another option is to try out the Webpack 5 beta, which actually will strip out unused code and print `/* unused harmony ... */` everywhere its going to actually strip out code.
+
+> What about sourcemaps?
+
+You can still use them, I just didn't want to make my examples too verbose. Incidentally, if you modularize your library bundles, you will have smaller source map files and debugging tools will actually perform better since they don't have to parse such a big source map! So you are getting developer performance wins there as well.
+
+> What if I use Lerna to seperate packages?
+
+Same thing goes. Use rollup to bundle your library code, webpack to bundle your consumer code, and you should be fine. If you have a more complicated dependency structure, you should evaluate which packages should be bundled with rollup as ES6 modules, and which packages should be bundled with webpack to perform the tree shaking. 
+
+> What if I don't want to use webpack? 
+
+Rollup also does tree shaking, but I haven't experimented with an all Rollup setup yet. Webpack is superior when creating a final consumable bundle so it makes sense to have that as your last bundler.
+
+> What if I'm only making the library and I don't use webpack?
+
+Ultimately, your consumers won't need all the code you write into your library, so its essential that you make your library tree-shakable. Since most consumers use webpack as their bundler, the information in this article should set you up for success with most consumers.
+
+> What if I only have access to the consumer configuration?
+
+The most you can do is make sure you are set up to tree shake the libraries that are tree shake-able. You could get fancy and make an intermediary step to transpile the libraries you consume to fit the structure outlined above.
