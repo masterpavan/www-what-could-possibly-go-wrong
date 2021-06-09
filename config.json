@@ -1,19 +1,17 @@
 {
-  "base_url": "https://wutali-nextjs-netlify-blog.netlify.app",
-  "site_title": "Next.js Netlify Blog",
-  "site_description": "Next.js blog template for Netlify",
+  "base_url": "https://www.whatcouldpossiblygowrongblog.com",
+  "site_title": "What Could Possibly Go Wrong?",
+  "site_description": "A blog about things I've encountered while working in tech",
   "site_keywords": [
     {
       "keyword": "Next.js"
     },
-    {
-      "keyword": "Netlify"
-    },
+    "Blog",
     {
       "keyword": "React"
     }
   ],
   "posts_per_page": 5,
   "twitter_account": "@my-account",
-  "github_account": "wutali"
+  "github_account": "masterpavan"
 }
